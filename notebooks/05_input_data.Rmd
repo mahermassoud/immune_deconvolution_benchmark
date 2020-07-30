@@ -1,4 +1,5 @@
 ```{r setup, include=FALSE}
+setwd("/Users/massoudmaher/Documents/Code/immune_deconvolution_benchmark/notebooks/")# TODO RM
 # tidyverse
 library(dplyr)
 library(dbplyr)
@@ -25,10 +26,16 @@ library(testit)
 library(knitr)
 library(circlize)
 library(gridGraphics)
+## TODO changed this bit because you cant get bioqc through conda on mac
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+#BiocManager::install("BioQC")
 library(BioQC)
+##
 library(ggbeeswarm)
 
-devtools::load_all("../immunedeconv")
+#devtools::load_all("../immunedeconv")
+library(immunedeconv)
 source("../lib/make_cell_fraction_vector.R")
 source("../lib/make_cor.R")
 source("../lib/get_slope.R")
@@ -353,5 +360,6 @@ mean(c(immune_cell_reference$expr_mat))
 ```
 
 ```{r}
-save.image(file="../results/cache/input_data.rda", compress=FALSE)
+# TODO redo this becauase the current one has lots of extra stuff
+#save.image(file="../results/cache/input_data.rda", compress=FALSE)
 ```
