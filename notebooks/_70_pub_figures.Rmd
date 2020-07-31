@@ -1,0 +1,639 @@
+# Creating publication ready figures
+```{r cache_fig_results, include=FALSE}
+### Cache and load data
+save(res_mixing_study, res_validation,
+     res_sensitivity, res_spillover, res_methods_validity,
+     file="../results/cache/results_for_figures.rda")
+load("../results/cache/results_for_figures.rda")
+theme_set(theme_cowplot(font_size=11)) # reduce default font siz
+
+#### Figure dimensions
+# (BioMed Central standard dimensions)
+# full width page: 170mm
+# full page height: 225mm (for figure and legend)
+WIDTH = 183
+HEIGHT = 247
+```
+
+```{r define_names, include=FALSE}
+# Define names
+tmp_names = names(config$deconvolution_methods)
+tmp_names[tmp_names == "CIBERSORT (abs.)"] = "CIBERSORT abs"
+method_names = tibble(
+  method = config$deconvolution_methods,
+  method_name = factor(tmp_names, levels=sort(tmp_names, decreasing = FALSE))
+) %>% arrange(method_name)
+
+
+method_abbrev = c("mcp_counter"="MCP", "epic"="EPC", "quantiseq"="QTS", "xcell"="XCL",
+                  "cibersort"="CBS", "cibersort_abs"="CBA", "timer"="TMR")
+
+# fallback if method abbrev is not defined
+method_names %<>% left_join(tibble(method=names(method_abbrev), method_abbrev=method_abbrev)) %>%
+  mutate(method_abbrev = if_else(is.na(method_abbrev), toupper(substr(method, 0, 3)), method_abbrev))
+
+cell_type_names = tibble(
+  cell_type      = c("B cell", "Dendritic cell", "Macrophage/Monocyte",
+                     "NK cell", "T cell CD4+", "T cell CD8+", "T cell CD4+ (non-regulatory)",  "T cell regulatory (Tregs)",
+                     "Monocyte", "T cell", "Cancer associated fibroblast", "Endothelial cell", "cancer cell"),
+  cell_type_name = c("B",      "DC",             "Mac/Mono",
+                     "NK",      "T CD4+",      "T CD8+" ,     "T CD4+ n.r.",                   "T reg",
+                     "Mono",     "T",      "CAF",                          "Endo",             "Cancer")
+)
+
+validation_datasets = tibble(
+  dataset = c("all", "hoek", "racle", "schelker_ovarian"),
+  dataset_name = c("All datasets\n(n=15)", "Hoek\n(PBMC, n=8)", "Racle\n(melan., n=4)", "Schelker\n(ovarian, n=3)")
+)
+
+HEATMAP_FONT_SIZE = 2.7
+```
+
+
+```{r, define_cor_table, include=FALSE}
+#' plot correlations as a table colored by the absolute value.
+plot_cor_table = function(data, dataset="none") {
+  if(!("asterisk" %in% names(data))) {
+    data %<>% mutate(asterisk = "no")
+  }
+  if(!("category" %in% names(data))) {
+    data %<>% mutate(category = dataset)
+  }
+  data %>%
+    mutate(pearson_text = if_else(pearson < 0, "< 0", as.character(round(pearson, 2))),
+           pearson = if_else(pearson < 0, 0, pearson)) %>%
+    mutate(asterisk = if_else(is.na(asterisk), "no", asterisk)) %>%
+    mutate(pearson_text = if_else(asterisk == "yes", paste0(pearson_text, "*"), pearson_text)) %>%
+    mutate(pearson_text = if_else(is.na(pearson), "n/a", pearson_text),
+           pearson = if_else(is.na(pearson), 0, pearson)) %>%
+    inner_join(method_names) %>%
+    ggplot(aes(x=column, y=reorder(method_abbrev, -order(method_abbrev)))) +
+      geom_tile(aes(fill=pearson)) +
+      geom_text(aes(label=pearson_text), size=HEATMAP_FONT_SIZE) +
+      scale_fill_distiller(type="div", palette = "RdYlGn", direction=1, values=c(0,1), limits=c(0, 1)) +
+      theme_benchmark() +
+      theme(axis.text.x.top=element_text(angle = 90, vjust = .5, hjust=0),
+              legend.position="none",
+              strip.text.x = element_text(size=11)) +
+      facet_wrap(~category, scales = "free", strip.position="left", nrow=1) +
+      # theme(strip.background = element_blank(),
+      #       strip.text.x = element_blank()) +
+      scale_x_discrete(position = "top") +
+      xlab(NULL) +
+      ylab(NULL) +
+      theme_title(hjust=0.5)
+}
+
+```
+
+
+
+
+
+
+## Predictions on simulated vs. genuine bulk
+```{r, method-validity-f1a, fig.width=7, fig.height=2, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Predictions on simulated vs. genuine bulk"}
+fun_breaks3 = function(limits) {
+  breaks = signif(max(limits) * c(0.25, 0.75),1)
+  names(breaks) = attr(breaks, "labels")
+  breaks
+}
+
+tmp_cor = res_methods_validity$all_results_mapped %>%
+  group_by(method) %>%
+  do(make_cor(.$bulk, .$simulated)) %>%
+  mutate(pearson=round(pearson, 2)) %>%
+  inner_join(method_names)
+
+res_methods_validity$all_results_mapped %>%
+  inner_join(cell_type_names) %>%
+  inner_join(method_names) %>%
+  ggplot(aes(x=bulk, y=simulated)) +
+  geom_point(aes(colour=cell_type_name), size=.5) +
+  facet_wrap(~method_name, scales="free", nrow=1) +
+  theme(legend.position = "top") +
+  geom_text(data=tmp_cor, mapping=aes(label=paste0("r=", pearson), x=0, y=0), hjust=0, vjust=-8, size=2.4) +
+  panel_border() +
+  scale_x_continuous(breaks=fun_breaks3) +
+  scale_y_continuous(breaks=fun_breaks3) +
+  theme(strip.text=element_text(size=6),
+        panel.spacing = unit(2, "mm"), axis.text = element_text(size=8))
+```
+
+
+```{r, mixing-corr, fig.width=7, fig.height=6, message=FALSE, warning=FALSE, echo=FALSE}
+fun_breaks = function(limits) {
+  breaks = signif(max(limits) * c(0.25, 0.75),1)
+  names(breaks) = attr(breaks, "labels")
+  breaks
+}
+
+corr_annot = res_mixing_study$correlations %>%
+  select(method, cell_type, pearson, p_signif) %>%
+  mutate(pearson = round(pearson, 2)) %>%
+  inner_join(method_names) %>%
+  inner_join(cell_type_names) %>%
+  mutate(cell_type_name_f = factor(cell_type_name, levels=cell_type_names$cell_type_name)) %>%
+  distinct()
+
+plot_mixing = res_mixing_study$all_results %>%
+  inner_join(method_names) %>%
+  inner_join(cell_type_names) %>%
+  mutate(cell_type_name_f = factor(cell_type_name, levels=cell_type_names$cell_type_name)) %>%
+  ggplot(aes(x=true_fraction, y=estimate)) +
+    geom_point(size=.2) +
+    geom_text(data=corr_annot, mapping=aes(label=paste0("r=", pearson, ", ", p_signif), x=-Inf, y=-Inf), hjust=-0.1, vjust=-5.4, size=2.4) +
+    facet_grid(method_abbrev ~ cell_type_name_f, scales="free") +
+    stat_smooth(color="blue", method="lm", size=.4) +
+    scale_color_manual(values=color_scales$methods, na.value="grey") +
+    scale_x_continuous(breaks=c(.2)) +
+    scale_y_continuous(breaks=fun_breaks) +
+    theme(legend.position = "none", strip.text=element_text(size=8),
+          panel.spacing = unit(.5, "mm"), axis.text = element_text(size=8)) +
+    ylab("estimated fraction") +
+    xlab("true fraction") +
+    panel_border()
+
+# ggsave("../results/figures/correlations_mixing.pdf", width=WIDTH, height=140, units = "mm")
+# ggsave("../results/figures/correlations_mixing.png", width=WIDTH, height=140, units = "mm", dpi=600)
+```
+
+```{r validation_benchmark, include=FALSE}
+# Validation Benchmark
+ALL_CELLS = "All cells"
+use_cell_types = c("B cell", "Dendritic cell", "Monocyte", "NK cell", "T cell CD4+", "T cell CD8+", "T cell")
+
+validation = new.env()
+validation$all_results = res_validation$all_results %>% filter(cell_type %in% use_cell_types) %>%
+  filter(!(cell_type == "T cell" & dataset != "hoek")) %>% # otherwise t cells are counted twice!
+  inner_join(cell_type_names)
+
+validation$all_datasets = validation$all_results %>%
+  group_by(method, cell_type_name, cell_type) %>%
+  do(make_cor(.$estimate, .$true_fraction)) %>%
+  mutate(asterisk = if_else(cell_type == "Monocyte" & method == "mcp_counter", "yes", "no")) %>%
+  mutate(category = validation_datasets[validation_datasets$dataset == 'all', "dataset_name"] %>% pull(), column=cell_type_name)
+
+validation$hoek = validation$all_results %>%
+  filter(dataset == 'hoek') %>%
+  group_by(method, cell_type_name, cell_type) %>%
+  do(make_cor(.$estimate, .$true_fraction)) %>%
+  mutate(asterisk = if_else(cell_type == "Monocyte" & method == "mcp_counter", "yes", "no")) %>%
+  mutate(category = validation_datasets[validation_datasets$dataset == 'hoek', "dataset_name"] %>% pull()) %>%
+  mutate(column = cell_type_name)
+```
+
+
+```{r validation-benchmark-all-cells, fig.width=4, fig.height=7, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Comparison of absolute predictions for three validation dataset. "}
+val_results_all = res_validation$all_results %>%
+  mutate(dataset2 = dataset) %>%
+  bind_rows(res_validation$all_results %>% mutate(dataset2 = "all")) %>%
+  filter(!(cell_type == "T cell" & dataset != "hoek")) %>%
+  inner_join(method_names) %>%
+  inner_join(validation_datasets, by=c("dataset2"="dataset"))
+
+corr_annot = val_results_all %>%
+  group_by(dataset2, method) %>%
+  do(make_cor(.$true_fraction, .$estimate)) %>%
+  select(method, dataset2, pearson, p_signif) %>%
+  mutate(pearson = round(pearson, 2)) %>%
+  inner_join(method_names) %>%
+  inner_join(validation_datasets, by=c("dataset2"="dataset")) %>%
+  distinct()
+
+p_validation_all_cells = val_results_all %>%
+  ggplot(aes(x=true_fraction, y=estimate)) +
+    geom_point(aes(color=cell_type), size=.4) +
+    geom_text(data=corr_annot, mapping=aes(label=paste0("r=", pearson, ", ", p_signif), x=-Inf, y=-Inf), hjust=-0.1, vjust=-5.2, size=2.4) +
+    scale_color_manual(values=color_scales$validation) +
+    facet_grid(method_abbrev~dataset_name, scales = "free_y") +
+    scale_x_continuous(breaks=c(.5)) +
+    scale_y_continuous(breaks=fun_breaks) +
+    theme(legend.position = "top", strip.text=element_text(size=8),
+          panel.spacing = unit(.5, "mm"), axis.text = element_text(size=8)) +
+    guides(colour = guide_legend(override.aes = list(size=2), nrow=4, title="cell type")) +
+    ylab("estimated fraction") +
+    xlab("true fraction") +
+    panel_border()
+```
+
+
+```{r, fig.height=3.5, include=FALSE}
+p_validation_all_datasets = validation$all_datasets %>%
+  plot_cor_table()
+
+p_validation_hoek = validation$hoek %>%
+  plot_cor_table()
+
+print(p_validation_all_datasets)
+print(p_validation_hoek)
+```
+
+
+
+## Benchmark results
+```{r, fig.height=8.27, fig.width=7, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Benchmark results main figure. "}
+# combine heatmaps
+
+## margins
+MT1 = -.3
+MB1 = .5
+MR1 = .3
+ML1 = .2
+
+p2_validation_all_cells = p_validation_all_cells + theme(legend.position = "none")
+p2_validation_all_cells_legend = get_legend(p_validation_all_cells)
+
+plots_left = align_plots(plot_mixing, p2_validation_all_cells, align="v", axis="l")
+
+
+## fine-tune formatting
+p2_validation_all_datasets = p_validation_all_datasets  +
+  theme(plot.margin = margin(t=MT1, b=MB1, r=MR1, unit="cm", l=ML1))
+p2_validation_hoek = p_validation_hoek + theme(plot.margin = margin(t=MT1, b=MB1, r=MR1, l=ML1, unit="cm"))
+
+plot_validation = plot_grid(p2_validation_all_datasets, p2_validation_hoek,
+          align = "v",
+          nrow = 2,
+          axis="lr",
+          hjust = -.5,
+          label_size = 12,
+          labels=c("c", "d"),
+          rel_heights = c(.5, .5))
+
+plot_val_legend = plot_grid(plot_validation, p2_validation_all_cells_legend,
+                            nrow=2,
+                            rel_heights =c(.8, .2))
+
+p_lower = plot_grid(plots_left[[2]], plot_val_legend,
+                    nrow=1,
+                    labels=c("b"),
+                    label_size=12,
+                    rel_widths = c(.5, .5))
+
+plot_grid(plots_left[[1]], p_lower, align="h", ncol=1, axis="lr", labels = "a", rel_heights = c(.5, .5), label_size = 12)
+
+# ggsave("../results/figures/summary.pdf", height = HEIGHT, width = WIDTH, units = "mm")
+ggsave("../results/figures/summary.eps", height = 210, width = WIDTH, units = "mm")
+ggsave("../results/figures/summary.jpg", height = 210, width = WIDTH, units = "mm", dpi=400)
+```
+
+
+
+## detection limit / false positive figure
+```{r detection-limit-fp, fig.width=6.9, fig.height=5, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Detection limit and false positives."}
+ct_order = c("B", "DC", "Mac/Mono", "NK", "T CD4+", "T CD8+", "T CD4+ n.r.", "T reg", "CAF", "Endo")
+
+
+data = res_sensitivity$background_data$immune_bg %>%
+  inner_join(method_names) %>%
+  inner_join(cell_type_names) %>%
+    mutate(cell_type_name = factor(cell_type_name, levels=ct_order))
+
+data_detection_limit = res_sensitivity$data_detection_limit$immune_bg %>%
+  inner_join(method_names) %>%
+  inner_join(cell_type_names) %>%
+  ungroup() %>% 
+  mutate(cell_type_name = factor(cell_type_name, levels=ct_order))
+
+
+data_false_positives = res_sensitivity$data_false_positives$immune_bg %>%
+  inner_join(method_names) %>%
+  inner_join(cell_type_names) %>%
+  ungroup() %>%
+  rename(fp_prediction=mean) %>%
+  mutate(cell_type_name = factor(cell_type_name, levels=ct_order))
+
+
+fun_breaks2 = function(limits) {
+  breaks = signif(max(limits) * c(0, 0.5),1)
+  names(breaks) = attr(breaks, "labels")
+  breaks
+}
+
+
+data %>%
+  ggplot(aes(x=frac_immune_cells, y=mean)) +
+    geom_ribbon(aes(ymin=mean-ci, ymax=mean+ci), alpha=.2) +
+    geom_point(size=.1, shape=20) +
+    panel_border() +
+    facet_grid(method_abbrev ~ cell_type_name, scales = "free_y") +
+    scale_x_continuous(breaks=c(.0, .2), limits=c(0, 0.25)) +
+    scale_y_continuous(breaks=fun_breaks2) +
+    geom_hline(mapping=aes(yintercept=0, colour="zero"), linetype="dashed", show.legend=FALSE, size=.2) +
+    geom_vline(mapping=aes(xintercept = 0, color="zero"), linetype="dashed", show.legend=FALSE, size=.2) +
+    geom_vline(data=data_detection_limit, mapping=aes(xintercept=min_frac, colour="minimal detection fraction"), show.legend = FALSE, size=.2) +
+    geom_hline(data=data_false_positives, mapping=aes(yintercept=fp_prediction, colour="background prediction fraction"), size=.2) +
+    geom_hline(yintercept = 0, mapping = aes(colour="detection limit"), linetype="dashed", alpha=0) + # fake line to fix legend
+    ylab("average estimate") +
+    xlab("fraction of spike-in cells") +
+    theme(legend.position = "top", strip.text=element_text(size=8),
+          panel.spacing = unit(1, "mm"), axis.text = element_text(size=8)) +
+    scale_color_manual(values=c("zero"="grey", "minimal detection fraction"="red", "background prediction fraction"="blue"), guide=guide_legend("performance measure", override.aes = list(alpha=1, linetype=c("solid", "solid", "dashed"))))
+
+ggsave("../results/figures/detection_limit_fp.eps", width = WIDTH, height=130, units = "mm", device = cairo_ps, fallback_resolution=600)
+ggsave("../results/figures/detection_limit_fp.jpg", width = WIDTH, height=130, units = "mm", dpi=400)
+```
+
+## detection limit / false positive figure (cancer only background)
+```{r detection-limit-fp-cancer-bg, fig.width=6.9, fig.height=5, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Detection limit and false positives."}
+data = res_sensitivity$background_data$cancer_bg %>%
+  inner_join(method_names) %>%
+  inner_join(cell_type_names) %>%
+    mutate(cell_type_name = factor(cell_type_name, levels=ct_order))
+
+data_immune_bg = res_sensitivity$background_data$immune_bg %>%
+  inner_join(method_names) %>%
+  inner_join(cell_type_names) %>%
+    mutate(cell_type_name = factor(cell_type_name, levels=ct_order))
+
+data_detection_limit = res_sensitivity$data_detection_limit$cancer_bg %>%
+  inner_join(method_names) %>%
+  inner_join(cell_type_names) %>%
+  ungroup() %>% 
+  mutate(cell_type_name = factor(cell_type_name, levels=ct_order))
+
+
+data_false_positives = res_sensitivity$data_false_positives$cancer_bg %>%
+  inner_join(method_names) %>%
+  inner_join(cell_type_names) %>%
+  ungroup() %>%
+  rename(fp_prediction=mean) %>%
+  mutate(cell_type_name = factor(cell_type_name, levels=ct_order))
+
+
+fun_breaks2 = function(limits) {
+  breaks = signif(max(limits) * c(0, 0.5),1)
+  names(breaks) = attr(breaks, "labels")
+  breaks
+}
+
+
+data %>%
+  ggplot(aes(x=frac_immune_cells, y=mean)) +
+    geom_ribbon(aes(ymin=mean-ci, ymax=mean+ci), alpha=.2) +
+    geom_point(size=.1, shape=20, show.legend = TRUE, aes(color="cancer background")) +
+    geom_point(data=data_immune_bg, aes(x=frac_immune_cells, y=mean, color="immune background"), size=.1, shape=20) + 
+    panel_border() +
+    facet_grid(method_abbrev ~ cell_type_name, scales = "free_y") +
+    scale_x_continuous(breaks=c(.0, .2), limits=c(0, 0.25)) +
+    scale_y_continuous(breaks=fun_breaks2) +
+    geom_hline(mapping=aes(yintercept=0, colour="zero"), linetype="dashed", show.legend=FALSE, size=.2) +
+    geom_vline(mapping=aes(xintercept = 0, color="zero"), linetype="dashed", show.legend=FALSE, size=.2) +
+    geom_vline(data=data_detection_limit, mapping=aes(xintercept=min_frac, colour="minimal detection fraction"), show.legend = FALSE, size=.2) +
+    geom_hline(data=data_false_positives, mapping=aes(yintercept=fp_prediction, colour="background prediction fraction"), size=.2) +
+    geom_hline(yintercept = 0, mapping = aes(colour="detection limit"), linetype="dashed", alpha=0) + # fake line to fix legend
+    ylab("average estimate") +
+    xlab("fraction of spike-in cells") +
+    theme(legend.position = "top", strip.text=element_text(size=8),
+          panel.spacing = unit(1, "mm"), axis.text = element_text(size=8)) +
+    scale_color_manual(values=c("zero"="grey", "minimal detection fraction"="red", "background prediction fraction"="blue",
+                                "immune background"="grey", "cancer background"="black"),
+                       guide=guide_legend("performance measure", nrow=2,
+                                          override.aes = list(alpha=1,
+                                                              linetype=c("solid", "blank", "blank", "solid", "dashed"),
+                                                              shape=c(NA, 20, 20, NA, NA))))
+
+# ggsave("../results/figures/detection_limit_fp_cancer_bg.eps", width = WIDTH, height=130, units = "mm")
+ggsave("../results/figures/detection_limit_fp_cancer_bg.jpg", width = WIDTH, height=130, units = "mm", dpi=400)
+```
+
+```{r summary-table-tsv, include=FALSE}
+summary_table = res_mixing_study$correlations %>%
+  inner_join(cell_type_names) %>%
+  inner_join(method_names) %>%
+  select(cell_type_name, method_name, pearson) %>%
+  full_join(select(data_detection_limit, method_name, cell_type_name, min_frac)) %>%
+  full_join(select(data_false_positives, method_name, cell_type_name, fp_prediction)) %>%
+  mutate(min_frac=round(min_frac, 3), fp_prediction=round(fp_prediction, 3)) %>%
+  mutate(pearson=if_else(pearson < 0, "< 0", as.character(round(pearson, 2)))) %>%
+  select(`cell type`=cell_type_name, `method`=method_name, correlation=pearson,
+         `detection limit`=min_frac, `false positives`=fp_prediction) %>%
+  arrange(`cell type`, `method`)
+
+summary_table %>%
+  write_tsv("../results/tables/summary_table.tsv")
+
+```
+
+## Migration charts for Spillover analysis
+```{r, fig.width = 13, fig.height=6, include=FALSE}
+methods = config$deconvolution_methods
+
+# cibersort and cibersort abs are identical in this analysis, no need to include both.
+methods = sort(methods)
+tmp_method_names = as.list(method_names %>% pull(method_abbrev))
+names(tmp_method_names) = method_names$method
+
+migration = res_spillover$all_results %>%
+  filter(dataset == "artificial_bulk") %>%
+  group_by(method, cell_type, true_cell_type) %>%
+  summarise(estimate = mean(estimate)) %>%
+  ungroup()
+
+noise_ratio = migration %>%
+  group_by(method) %>%
+  mutate(type = ifelse(cell_type == true_cell_type, "signal", "noise")) %>%
+  group_by(method, type) %>%
+  summarise(estimate = sum(estimate)) %>%
+  spread(type, estimate) %>%
+  mutate(noise_ratio = noise/(signal+noise)) %>%
+  ungroup()
+
+layout(matrix(seq(1, 8), 2, 4))
+par(mar=rep(0.1, 4))
+circos.par(cell.padding = rep(0, 4))
+x = lapply(methods, function(method) {
+      tmp_migration = migration %>%
+        filter(method == !!method) %>%
+        select(-method) %>%
+        spread(cell_type, estimate) %>%
+        as.data.frame() %>%
+        column_to_rownames("true_cell_type") %>%
+        as.matrix()
+
+      chordDiagram(tmp_migration, directional = TRUE, transparency = .5,
+                   grid.col = color_scales$spillover,
+                   annotationTrack = c("grid"),
+                   annotationTrackHeight = uh(5, "mm")
+                   )
+
+      text(0, 0, tmp_method_names[[method]], cex = 2.)
+      text(0, -0.3, as.character(round(filter(noise_ratio, method == !!method) %>% pull(noise_ratio), 2)), cex=1.8)
+})
+
+grid.echo()
+migration_plot = grid.grab()
+```
+
+```{r, include=FALSE}
+# make legend using ggplot
+tmp_barplot_data = migration %>%
+  inner_join(cell_type_names, by=c("true_cell_type"="cell_type")) %>% 
+  select("cell type" = cell_type_name) %>%
+  # add arbitrary value
+  mutate(value = 1)
+
+p = tmp_barplot_data %>%
+  ggplot(aes(x=`cell type`, y=value, fill=`cell type`)) +
+  geom_bar(stat='identity') +
+  scale_fill_manual(values=color_scales$spillover) +
+  guides(fill=guide_legend(title.position="top", 
+                                     title.hjust =0.5, 
+                                     ncol=2,
+                                     label.theme=element_text(size=12, angle=0))) + 
+  theme(legend.position = "top", legend.justification = "center")  
+p
+
+migration_legend = cowplot::get_legend(p)
+```
+
+```{r spillover-plot-row, fig.width = 6.69, fig.height=3.93, echo=FALSE, message=FALSE, fig.cap="Migration chart figure for paper. "}
+ggdraw(migration_plot) + draw_plot(migration_legend, x=.37, y=-.25)
+ggsave("../results/figures/spillover_migration_chart.jpg", width=WIDTH*1.5, height=130, units = "mm", dpi=600)
+ggsave("../results/figures/spillover_migration_chart.eps", width=WIDTH*1.5, height=130, units = "mm", dpi=600, device = cairo_ps, fallback_resolution=600)
+```
+
+### migration chart figure with FACS samples
+```{r, fig.width = 13, fig.height=6, include=FALSE}
+methods = config$deconvolution_methods
+
+# cibersort and cibersort abs are identical in this analysis, no need to include both.
+methods = sort(methods)
+tmp_method_names = as.list(method_names %>% pull(method_abbrev))
+names(tmp_method_names) = method_names$method
+
+migration = res_spillover$all_results %>%
+  filter(dataset == "immune_reference") %>%
+  filter(true_cell_type != "Neutrophil") %>%
+  group_by(method, cell_type, true_cell_type) %>%
+  summarise(estimate = mean(estimate)) %>%
+  ungroup()
+
+ noise_ratio = migration %>%
+      # aggregate macro/mono into a single category
+      mutate(true_cell_type = ifelse(true_cell_type %in% c("Macrophage M1", "Macrophage M2", "Monocyte"), "Macrophage/Monocyte", true_cell_type)) %>%
+      mutate(true_cell_type = ifelse(true_cell_type == "T cell regulatory (Tregs)", "T cell CD4+", true_cell_type)) %>%
+      group_by(method, cell_type, true_cell_type) %>%
+      summarise(estimate = mean(estimate)) %>%
+      group_by(method) %>%
+      mutate(type = ifelse(cell_type == true_cell_type, "signal", "noise")) %>%
+      group_by(method, type) %>%
+      summarise(estimate = sum(estimate)) %>%
+      spread(type, estimate) %>%
+      mutate(noise_ratio = noise/(signal+noise)) %>%
+      ungroup()
+
+
+layout(matrix(seq(1, 8), 2, 4))
+par(mar=rep(0.1, 4))
+circos.par(cell.padding = rep(0, 4))
+x = lapply(methods, function(method) {
+      tmp_migration = migration %>%
+        filter(method == !!method) %>%
+        select(-method) %>%
+        spread(cell_type, estimate) %>%
+        as.data.frame() %>%
+        column_to_rownames("true_cell_type") %>%
+        as.matrix()
+
+      chordDiagram(tmp_migration, directional = TRUE, transparency = .5,
+                   grid.col = color_scales$spillover,
+                   annotationTrack = c("grid"),
+                   annotationTrackHeight = uh(5, "mm")
+                   )
+
+      text(0, 0, tmp_method_names[[method]], cex = 2.)
+      text(0, -0.3, as.character(round(filter(noise_ratio, method == !!method) %>% pull(noise_ratio), 2)), cex=1.8)
+})
+
+grid.echo()
+migration_plot = grid.grab()
+```
+
+```{r, include=FALSE}
+# make legend using ggplot
+tmp_barplot_data = migration %>%
+#   inner_join(cell_type_names, by=c("true_cell_type"="cell_type")) %>% 
+  select("cell type" = true_cell_type) %>%
+  bind_rows(migration %>% select("cell type"=cell_type)) %>%
+  filter(`cell type` != "Neutrophil") %>%
+  distinct() %>% 
+  # add arbitrary value
+  mutate(value = 1)
+
+p = tmp_barplot_data %>%
+  ggplot(aes(x=`cell type`, y=value, fill=`cell type`)) +
+  geom_bar(stat='identity') +
+  scale_fill_manual(values=color_scales$spillover) +
+  guides(fill=guide_legend(title.position="top", 
+                                     title.hjust =0.5, 
+                                     ncol=3,
+                                     label.theme=element_text(size=12, angle=0))) + 
+  theme(legend.position = "top", legend.justification = "center")  
+p
+
+migration_legend = cowplot::get_legend(p)
+```
+
+```{r spillover-plot-row-validation, fig.width = 6.69, fig.height=3.93, echo=FALSE, message=FALSE, fig.cap="Migration chart figure for paper. "}
+plot_grid(migration_plot, migration_legend, align = "v", axis="t", labels=NULL, ncol=1, rel_heights = c(1, .3)) 
+ggsave("../results/figures/spillover_migration_chart_facs.jpg", width=WIDTH*1.5, height=160, units = "mm", dpi=300)
+# ggsave("../results/figures/spillover_migration_chart.eps", width=WIDTH*1.5, height=130, units = "mm", dpi=600, device = cairo_ps, fallback_resolution=600)
+```
+
+
+```{r, include=FALSE}
+# Plot differences with removed marker genes
+rmgenes_data_dc = res_spillover$rm_marker_genes_dc %>%
+  inner_join(method_names) %>%
+  filter(cell_type == "B cell") %>%
+  mutate(dataset = if_else(dataset == "before", "no", "yes"))
+
+rmgenes_plot_dc = rmgenes_data_dc %>%
+  ggplot(aes(x=dataset, y=predicted_fraction, colour=dataset)) +
+    geom_quasirandom(size=.5) +
+    stat_summary(fun.y=mean, geom="crossbar", fun.ymin=mean, fun.ymax=mean, width=.5, color="black") +
+    facet_wrap(~method_abbrev, drop = TRUE) +
+    stat_compare_means(paired = TRUE, method = "t.test", label="p", size=2.5) +
+    theme(legend.position = "none", strip.text=element_text(size=9),
+          panel.spacing = unit(.5, "mm"), axis.text = element_text(size=8)) + 
+    xlab(" ") +
+    ylab("B cell score") +
+    scale_color_brewer(type="qual", palette=6, direction = -1) +
+    ylim(0, .75) +
+    theme(plot.margin = margin(t=0.5, l=1, r=1, unit = "cm")) 
+
+
+```
+
+```{r, include=FALSE}
+rmgenes_data_mac = res_spillover$rm_marker_genes_caf %>%
+  inner_join(method_names) %>%
+  filter(cell_type == "Macrophage/Monocyte") %>%
+  mutate(dataset = if_else(dataset == "before", "no", "yes"))
+
+rmgenes_plot_mac = rmgenes_data_mac %>% 
+  ggplot(aes(x=dataset, y=predicted_fraction, colour=dataset)) +
+    geom_quasirandom(size=.5) +
+    stat_summary(fun.y=mean, geom="crossbar", fun.ymin=mean, fun.ymax=mean, width=.5, color="black") +
+    facet_wrap(~method_abbrev, drop = TRUE) +
+    stat_compare_means(paired = TRUE, method = "t.test", label="p", size=2.5) +
+    theme(legend.position = "none", strip.text=element_text(size=9),
+          panel.spacing = unit(.5, "mm"), axis.text = element_text(size=8)) + 
+    xlab(" ") +
+    ylab("Mac/Mono score") +
+    scale_color_brewer(type="qual", palette=6, direction = -1) +
+    ylim(0, .20) +
+    theme(plot.margin = margin(t=0, l=1, r=1, unit = "cm")) 
+
+
+```
+
+```{r spillover-reduction-plot, width=3.5, height=2.5}
+p = plot_grid(rmgenes_plot_mac, rmgenes_plot_dc, align = 'h', nrow=1, rel_widths=c(.4, .7), labels=c("a", "b"))
+ggdraw(p) + draw_label("signature genes removed", x = .7, y = 0.06,
+            vjust = 1, hjust = 1, size = 14)
+ggsave("../results/figures/spillover_reduction.jpg", width=WIDTH*.75, height=79, units = "mm", dpi=300)
+ggsave("../results/figures/spillover_reduction.eps", width=WIDTH*.75, height=79, units = "mm")
+```
