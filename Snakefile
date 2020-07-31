@@ -37,10 +37,10 @@ rule book:
     # "results/cache/input_data.rda",
     # "results/cache/results_for_figures.rda",
     "results/figures/schelker_single_cell_tsne.pdf",
-    "results/figures/spillover_migration_chart.jpg",
-    "results/figures/spillover_migration_all.pdf",
-    "results/tables/mixing_study_correlations.tsv",
-    "results/tables/spillover_signal_noise.tsv"
+    #"results/figures/spillover_migration_chart.jpg",
+    #"results/figures/spillover_migration_all.pdf",
+    #"results/tables/mixing_study_correlations.tsv",
+    #"results/tables/spillover_signal_noise.tsv"
   conda:
     "envs/bookdown.yml"
   shell:
