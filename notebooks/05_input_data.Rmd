@@ -26,10 +26,6 @@ library(testit)
 library(knitr)
 library(circlize)
 library(gridGraphics)
-## TODO changed this bit because you cant get bioqc through conda on mac
-if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-#BiocManager::install("BioQC")
 library(BioQC)
 ##
 library(ggbeeswarm)
