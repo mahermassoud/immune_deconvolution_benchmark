@@ -1,0 +1,215 @@
+```{r setup, include=FALSE}
+# tidyverse
+library(dplyr)
+library(dbplyr)
+library(tidyr)
+library(tibble)
+library(readr)
+library(ggplot2)
+library(magrittr)
+library(readxl)
+library(stringr)
+# bioconductor
+library(Biobase)
+library(org.Hs.eg.db)
+library(GO.db)
+# other packages
+library(cowplot)
+library(pheatmap)
+library(ggpubr)
+library(DBI)
+library(foreach)
+library(doMC)
+library(data.tree)
+library(testit)
+library(knitr)
+library(circlize)
+library(gridGraphics)
+library(BioQC)
+library(ggbeeswarm)
+
+devtools::load_all("../immunedeconv") # Using custom immunedeconv
+#devtools::load_all("/home/mam4020/Code/immunedeconv")
+source("../lib/make_cell_fraction_vector.R")
+source("../lib/make_cor.R")
+source("../lib/get_slope.R")
+source("../lib/dt_caption.R")
+source("../lib/ggthemes.R")
+
+# edit this file for configuration options.
+source("config.R")
+
+color_file = "../tables/color_scales.xlsx"
+color_scales = sapply(excel_sheets(color_file), function(sheet) {
+  tbl = read_excel(color_file, sheet=sheet)
+  colors = tbl$color
+  names(colors) = tbl$value
+  colors
+})
+
+select = dplyr::select
+rename = dplyr::rename
+```
+
+
+# Input data
+
+In this chapter, we load and preprocess the datasets we use in this study
+
+Dataset | Reference
+--------|----------
+A dataset of more than 11,000 single cancer and immune cells, classified by cell type         | @Schelker2017
+50 Immune cell reference samples from 5 studies | Curated by @quantiseq2017
+3 ovarian cancer ascites samples (RNAseq + FACS) | @Schelker2017
+8 PBMC samples (RNAseq + FACS) | @Hoek2015
+4 metastatic melanoma samplese (RNAseq + FACS) | @EPIC2017
+
+
+## Schelker single cell data for simulated mixtures
+
+```{r single_cell_schelker, echo=FALSE, message=FALSE, cache=TRUE}
+tmp_env = new.env()
+with(tmp_env, {
+  load("../data/schelker/single_cell_schelker.rda")
+  # symbol_remap = read_tsv("../data/single_cell_schelker/symbol_checker.tsv") %>%
+  #   as.data.frame() %>%
+  #   column_to_rownames("Input")
+  valid_cells = pData(single_cell_schelker)$cell_type != "Unknown"
+  eset = single_cell_schelker[, valid_cells]
+  exprs(eset) = 2^exprs(eset)-1
+  pData(eset) %<>% rename(method_cell_type=cell_type) %>%
+    inner_join(immunedeconv::cell_type_map %>% filter(method_dataset == "schelker_single_cell"))
+  pbmc_cells = pData(eset)$source == "pbmc"
+  pData(eset)[pbmc_cells, "cell_type"] = "PBMC"
+  # rownames(eset) = symbol_remap[,rownames(eset)]$`Approved symbol`
+  assert("no unknown cells left", !any(pData(eset)$cell_type == "Unknown"))
+})
+single_cell_schelker = new.env()
+single_cell_schelker$eset = tmp_env$eset
+single_cell_schelker$cell_types = pData(single_cell_schelker$eset)$cell_type %>% unique()
+```
+
+```{r echo=FALSE}
+cell_types = as.environment(list(
+  available=pData(single_cell_schelker$eset) %>% select(cell_type) %>% distinct() %>% pull(cell_type),
+  cancer=c("Melanoma cell", "Ovarian carcinoma cell"),
+  other=c("Cancer associated fibroblast", "Endothelial cell")
+))
+cell_types$immune_cells = cell_types$available[!cell_types$available %in% c(cell_types$cancer, cell_types$other, "PBMC")]
+
+cell_types$background_cells = c(cell_types$cancer, cell_types$other)
+cell_types$n_background_cells = single_cell_schelker$eset %>% pData() %>%
+  filter(cell_type %in% cell_types$background_cells) %>%
+  group_by(cell_type) %>%
+  count() %>%
+  {'names<-'(.$n, .$cell_type)}
+```
+
+In this study, we make use of the single cell dataset curated by @Schelker2017. They aggregated single cell sequencing data from different sources resulting in a set of more than 11,000 single cells. They classified the cells using at set of 45 marker genes into `r length(cell_types$available)` categories:
+
+* `r length(cell_types$cancer)` cancer types (`r str_c(cell_types$cancer, collapse=", ")`),
+* `r length(cell_types$immune_cells)` immune cells (`r str_c(cell_types$immune_cells, collapse=", ")`),
+* `r length(cell_types$other)` other cells (`r str_c(cell_types$other, collapse=", ")`) and
+* *Unknown cells* which could not have been classified unambiguously.
+
+Unknown cells are excluded from the downstream analysis.
+
+The dataset consists of single cells from PBMC, melanoma and ovarian cancer ascites.
+As we are interested in the deconvolution of cancer samples, we exclude the PBMC cells from all downstream analyses.
+
+```{r echo=FALSE}
+pData(single_cell_schelker$eset) %>%
+  group_by(cell_type) %>%
+  count() %>%
+  knitr::kable(booktabs = TRUE, caption=sprintf("The %i single cells by cell type",
+                                                ncol(exprs(single_cell_schelker$eset))))
+```
+
+```{r echo=FALSE, message=FALSE, fig.width=13, fig.height=10, fig.cap="tSNE-clustering of the ~12,000 single cells from @Schelker2017. "}
+pData(single_cell_schelker$eset) %>%
+  ggplot(aes(x=tsneX1, y=tsneX2, colour=cell_type)) +
+           geom_point(size=1) +
+           theme(legend.position="right") +
+           scale_color_manual(values=color_scales$cell_types) +
+           guides(colour=guide_legend(ncol = 1, override.aes= list(size=4))) +
+           xlab("tSNE-1") +
+           ylab("tSNE-2") +
+           labs(color="cell type")
+
+ggsave("../results/figures/schelker_single_cell_tsne.pdf")
+ggsave("../results/figures/schelker_single_cell_tsne.png", dpi=1200)
+```
+
+## 3 ovarian cancer ascites samples from @Schelker2017
+Each sample has two technical replicates. We merge the two replicates by taking
+the mean for each gene.
+
+```{r schelker_ovarian, echo=FALSE, result="asis"}
+schelker_ovarian = new.env()
+with(schelker_ovarian, {
+  bulk_replicates = read_xls("../data/schelker/ascites_bulk_samples.xls")
+
+  samples = list("7873M"=c("ascites_7873_1", "ascites_7873_2"),
+                 "7882M"=c("ascites_7882_1", "ascites_7882_2"),
+                 "7892M"=c("ascites_7892_1", "ascites_7892_2"))
+
+  bulk = lapply(samples, function(cols) {
+    apply(bulk_replicates[,cols], 1, mean)
+  }) %>% bind_cols()
+
+  bulk %<>%
+    mutate(gene_symbol = bulk_replicates$Row)
+
+  expr_mat = bulk %>%
+    as.data.frame() %>%
+    column_to_rownames("gene_symbol") %>%
+    as.matrix()
+
+  # Load the ground truth
+
+  true_cell_count_sc = pData(single_cell_schelker$eset) %>%
+    filter(source == "ascites", donor %in% colnames(bulk)) %>%
+    group_by(donor, cell_type) %>%
+    count() %>%
+    rename(cell_count=n) %>%
+    group_by(donor) %>%
+    mutate(true_fraction=cell_count/sum(cell_count)) %>%
+    arrange(cell_type, donor)
+
+  true_cell_count_facs = read_excel("../data/schelker/ascites_facs.xlsx") %>%
+    gather(sample, true_fraction, -cell_type)
+
+   ref = true_cell_count_facs %>% select(sample, cell_type, true_fraction) %>% mutate(method_dataset = "schelker_ovarian")
+})
+
+```
+
+The two technical replicates are highly consistent: 
+```{r}
+with(schelker_ovarian, {
+  bulk_replicates2 = lapply(names(samples), function(id) {
+    expr = bulk_replicates[, c("Row", samples[[id]])] %>% mutate("sample"=id)
+    colnames(expr) = c("gene", "rep1", "rep2", "sample")
+    expr
+  }) %>% bind_rows()
+})
+
+schelker_ovarian$bulk_replicates2 %>%
+  ggplot(aes(x=rep1, y=rep2)) + geom_point() + stat_cor() + facet_wrap(~sample)
+
+```
+
+```{r echo=FALSE, results="asis"}
+dt_caption("Flow cytometry estimates of Schelker et al. ")
+schelker_ovarian$ref %>% DT::datatable()
+```
+
+The samples have also been profiled by single cell RNA sequencing. The following table shows the
+cell count for each sample.
+```{r echo=FALSE}
+schelker_ovarian$true_cell_count_sc %>%
+  group_by(donor) %>%
+  summarise(sum(cell_count)) %>%
+  kable(caption="Single cell count per ovarian cancer ascites sample. ")
+```
+

@@ -28,7 +28,8 @@ library(gridGraphics)
 library(BioQC)
 library(ggbeeswarm)
 
-devtools::load_all("../immunedeconv")
+devtools::load_all("../immunedeconv") # Using custom immunedeconv
+#devtools::load_all("/home/mam4020/Code/immunedeconv")
 source("../lib/make_cell_fraction_vector.R")
 source("../lib/make_cor.R")
 source("../lib/get_slope.R")

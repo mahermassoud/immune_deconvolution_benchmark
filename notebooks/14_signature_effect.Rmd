@@ -3,31 +3,10 @@ Notebook to see the effect of signature on accuracy. We will be taking
 the signature from EPIC, and using it with different methods
 and seeing the results
 
-
-# Validitiy of single cell RNA-seq as reference
-
-Since we rely on simulated bulk RNA-seq samples generated from scRNA-seq data, we
-first investigate if this approach is valid and will give reasonable
-estimates of the methods's performances.
-
-We conduct the following analyses:
-
-* Compare simulated bulk samples with a corresponding genuine bulk sample.
-* Check if immune-related genes are subject to a systematic bias.
-* Compare the predicted fractions of all methods on bulk vs. simulated samples.
-* Compare simulated bulk samples with a reference immune cell sample of the same cell type.
-
-
-## Compare simululated to genuine bulk samples
-```{r, include=FALSE}
-res_methods_validity = new.env()
-```
-
 \cite{Schelker2017} provide three samples for which paired single cell and bulk
 RNA-seq has been performed. We generate simulated bulk RNA-seq samples by
 taking the average of the single cells and compare the simulated to the genuine
 samples.
-
 ```{r, cache=TRUE}
 bulk_mean = sapply(colnames(schelker_ovarian$expr_mat), function(donor) {
   ind = pData(single_cell_schelker$eset)$donor == donor
@@ -35,143 +14,6 @@ bulk_mean = sapply(colnames(schelker_ovarian$expr_mat), function(donor) {
 })
 bulk_mean = apply(bulk_mean, 2, scale_to_million)
 ```
-
-
-```{r, cache=TRUE, echo=FALSE}
-genes = intersect(rownames(bulk_mean), schelker_ovarian$bulk$gene_symbol)
-
-expr_all = bind_rows(
-  schelker_ovarian$bulk  %>% mutate(source="bulk"),
-  bulk_mean %>% as_tibble(rownames="gene_symbol") %>% mutate(source="single_cell_aggregate")
-) %>%
-  filter(gene_symbol %in% genes) %>%
-  gather(sample, tpm, -gene_symbol, -source) %>%
-  spread(source, tpm) %>%
-  mutate(ScBulkLogRatio=log10(single_cell_aggregate+1)/log10(bulk+1))
-```
-
-```{r, include=FALSE}
-sig_genes = EPIC::TRef$sigGenes
-TIL10 = read_tsv("../immunedeconv/inst/extdata/quantiseq/TIL10_signature.txt")
-sig_genes %<>% c(TIL10$ID)
-if("cibersort" %in% config$deconvolution_methods) {
-  LM22 = read_tsv(immunedeconv::config_env$cibersort_mat)
-  sig_genes %<>% c(LM22$`Gene symbol`)
-}
-mcp_genes = read_tsv("https://raw.githubusercontent.com/ebecht/MCPcounter/master/Signatures/genes.txt")
-sig_genes %<>% c(mcp_genes$`HUGO symbols`)
-sig_genes %<>% unique()
-```
-
-```{r, fig.width=12, fig.height=6, echo=FALSE, fig.cap="Correlation of simulated bulk samples with corresponding genuine bulk RNA-seq samples. Genes used in the signatures of quanTIseq, EPIC, CIBERSORT and MCP-counter are shown in blue. " }
-expr_all %>%
-  mutate(bulk=log2(bulk+1), single_cell_aggregate=log2(single_cell_aggregate+1)) %>%
-  mutate(is_sig_gene = ifelse(gene_symbol %in% sig_genes, "signature gene", "other gene")) %>%
-  ggplot(aes(x=bulk, y=single_cell_aggregate)) +
-    geom_point(aes(color=is_sig_gene, alpha=is_sig_gene)) +
-    stat_cor(method="pearson") +
-    facet_wrap(~sample) +
-    geom_abline(slope = 1, intercept = 0, col="red") +
-    xlab("log2(TPM + 1) of bulk RNA-seq sample") +
-    ylab("log2(mean(TPM) + 1)) of single cell RNA-seq samples ") +
-    scale_color_manual(values = c("signature gene"="blue", "other gene"="#555555")) +
-    scale_alpha_manual(values = c("signature gene"=.7, "other gene"=.05))
-```
-
-
-## Enrichment analysis: Test for systematic Bias
-
-Next, we calculate the sc-bulk log ratio, by $$log(sc+1)/log(bulk+1)$$,
-
-We observe that the sc-bulk log ratio showes asymmetry: more genes show increased sc-aggregate expression rather than decreased sc-aggregate expression.
-
-```{r scBulkLogRatio, fig.height=3, fig.width=7, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="log-ratio of single cell agregates to geniune bulk. We observe that the distribution is skewed in direction of the single cells, i.e. more genes have increased gene expression in sc-aggregates rather than decreased."}
-lr <- ggplot(expr_all, aes(x=ScBulkLogRatio)) +
-  facet_wrap(~sample) +
-  geom_histogram(bins=100) +
-  scale_x_log10() +
-  geom_vline(xintercept=1) +
-  ggtitle("Sc-Bulk log ratio")
-print(lr)
-```
-
-What are these genes that seem to be higher expressed in single-cell aggregates than bulk? We were wondering if there is a systematic bias towards a certain group of genes that tend to be over/underrepresented in single-cell vs. bulk RNA seq.
-To this end, we take the geometric mean of the log ratio and run a gene set enrichment test with BioQC, using gene ontology (BP and CC terms) as the knowledgebase.
-
-```{r scOver, message=FALSE}
-geomMean <- function(x) 10^(mean(log10(x)))
-avgData <- expr_all %>% group_by(gene_symbol) %>% summarise(MeanBulk=geomMean(bulk),
-                                                            MeanSc=geomMean(single_cell_aggregate),
-                                                            MeanScBulkLogRatio=geomMean(ScBulkLogRatio))
-## translate gene symbol into EntrezIds
-gsIDs <- AnnotationDbi::select(org.Hs.eg.db, avgData$gene_symbol, c("ENTREZID"), "SYMBOL")
-annoAvgData <- avgData %>% inner_join(gsIDs, by=c("gene_symbol"="SYMBOL")) %>%
-  rename(GeneID=ENTREZID) %>%
-  filter(!is.na(GeneID)) %>% dplyr::rename(GeneSymbol = gene_symbol) %>%
-  dplyr::select(GeneID, GeneSymbol, MeanBulk, MeanSc, MeanScBulkLogRatio)
-## build up a list of GO gene-sets
-go <- AnnotationDbi::select(org.Hs.eg.db, annoAvgData$GeneID, c("GO"), "ENTREZID") %>%
-  filter(ONTOLOGY %in% c("BP","CC"),
-         EVIDENCE %in% c("EXP", "IDA", "IPI", "IMP", "IGI", "IEP"))
-goList <- with(go, split(ENTREZID, GO))
-goMatchList <- sapply(goList, function(x) match(x, annoAvgData$GeneID))
-goMatchListLen <- sapply(goMatchList, length)
-goBioQClist <- goMatchList[goMatchListLen>=5 & goMatchListLen<=1000]
-## Run two-sided Wilcoxon-Mann-Whitney test using sc-bulk log ratios
-goBioQCp <- wmwTest(annoAvgData$MeanScBulkLogRatio, goBioQClist,
-                      valType="p.two.sided")
-goBioQCq <- wmwTest(annoAvgData$MeanScBulkLogRatio, goBioQClist,
-                      valType="Q")
-goBioQClistAnno <- AnnotationDbi::select(GO.db, names(goBioQClist), c("ONTOLOGY", "TERM"), "GOID")
-goBioQCres <- cbind(goBioQClistAnno,
-                    GeneCount=sapply(goBioQClist, length),
-                    BioQC.twosided.pvalue=goBioQCp,
-                    BioQC.Qvalue=goBioQCq,
-                    FDR=p.adjust(goBioQCp, "BH"),
-                    Bonferroni=p.adjust(goBioQCp, "bonferroni"))
-#TODO table width and round pvalues
-```
-
-
-Below we display the terms that, under moderate stringency of filtering (Benjamini-Hochberg FDR<0.01), shows significant enrichment in either direction.
-
-```{r, echo=FALSE}
-immuneRes = subset(goBioQCres, FDR<0.01) %>% arrange(BioQC.Qvalue)
-
-immuneRes %>% write_tsv("../results/tables/go_enrichment_bulk_single_cell.tsv")
-
-immuneRes %>% DT::datatable(options = list("scrollX"="500px")) %>% DT::formatSignif(columns=c("BioQC.twosided.pvalue", "BioQC.Qvalue", "FDR", "Bonferroni"), digits = 2)
-```
-
-Interstingly, there are many terms that are highly significantly over- or underrepresented in simulated versus genuine bulk RNA-seq samples. We currently have no explanation for that.
-
-### Immune-relevant genes are consistent between sc and bulk data.
-
-We notice that *among these significantly enriched gene-sets above, no gene-sets are directly involved in immune response, cytokine/interleukin/chemokine response*.
-
-Alternatively, we show these immune-relevant gene-sets and their results by an incomprehensive keyword search, to further demonstrating that they do not show strong difference between sc-aggregated and bulk data.
-
-```{r}
-isImmune <- with(goBioQCres,
-                 grepl("immune\\b", TERM, ignore.case=TRUE) |
-                                   grepl("inflammation\\b", TERM, ignore.case=TRUE) |
-                                  grepl("cytokine\\b", TERM, ignore.case=TRUE) |
-                                     grepl("chemokine\\b", TERM, ignore.case=TRUE) |
-                                    grepl("interleukin\\b", TERM, ignore.case=TRUE) |
-                                    grepl("antigen\\b", TERM, ignore.case=TRUE) |
-                                    grepl("macrophage\\b", TERM, ignore.case=TRUE) |
-                                    grepl("dendritic cell\\b", TERM, ignore.case=TRUE))
-immuneRes <- goBioQCres %>% filter(isImmune) %>% arrange(FDR)
-
-immuneRes %>% write_tsv("../results/tables/go_enrichment_immune_bulk_single_cell.tsv")
-
-immuneRes %>% arrange(FDR) %>% DT::datatable(options = list(scrollX="500px")) %>% DT::formatSignif(columns=c("BioQC.twosided.pvalue", "BioQC.Qvalue", "FDR", "Bonferroni"))
-```
-
-
-All in all the bulk expression data and aggregated single-cell data are concordant, using a very rough method (non-parameterized gene-set enrichment test with BioQC), we observe that some classes of genes, such as protein ubiquitination/deubiquitination, spindle organization, and plama membrane genes, show tendency to be over- od under-represented in single-cell aggregates than bulk  data. The reason of this observation is not clear.
-
-However, we note that, by a limited keyword-search, we found that there is no significant enrichment of gene-ontology terms invovled in immune response that are significantly different between scRNA and bulk data. This further underlines the legitimity of using this particular pair of aggregated single-cell data and paired bulk sequencing data to benchmark different methods.
 
 ## Compare predicted fractions
 Most importantly, we ask how consistent the methods' predictions are on simulated vs. genuine bulk RNA-seq samples. We run all methods on both datasets and compare the results.
@@ -196,6 +38,7 @@ all_results = bind_rows(all_results_bulk, all_results_simulated) %>%
   gather(donor, fraction, -cell_type, -source, -method) %>%
   spread(source, fraction)
 
+res_methods_validity = new.env()
 res_methods_validity$all_results = all_results
 ```
 
@@ -242,87 +85,3 @@ all_results2 = bind_rows(all_results_bulk2, all_results_simulated2) %>%
 
 res_methods_validity$all_results_mapped = all_results2
 ```
-
-```{r, fig.width=12, fig.height=10, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Correlation of the methods' predictions on both simulated and genuine bulk RNA-seq samples on the cell types used in the benchmark only. "}
-
-
-all_results2 %>%
-  ggplot(aes(x = bulk, y=simulated)) +
-    geom_point(aes(colour=cell_type)) +
-    facet_wrap(~method, scales="free") +
-    stat_cor() +
-    scale_color_manual(values=color_scales$simulation)
-```
-
-The results show a strong correlation between both datasets and suggest that the approach is valid in general.
-The poor overlap of xCell is proabably due to the fact that there is little variance between the samples which xCell
-requires to compute a meaningful score (see their [README on
-GitHub](https://github.com/dviraran/xCell/blob/ce4d43121c4a161b1e72a50dc875e43d9cf89b0d/README.Md)).
-
-To demonstrate that this is the case, we run xCell on the same sample, but this time include `r ncol(immune_cell_reference$expr_mat)` immune cell reference samples in the run. By adding additional samples,
-we add additional variance which enables xCell to compute a meaningful score.
-
-```{r, cache=TRUE, echo=FALSE}
-anchor_bulk_mean = immune_cell_reference$expr_mat[rownames(bulk_mean),]
-simulated_bulk_expr_mat = cbind(bulk_mean, anchor_bulk_mean)
-
-bulk_genes = intersect(rownames(schelker_ovarian$expr_mat), rownames(immune_cell_reference$expr_mat))
-genuine_bulk_expr_mat = cbind(schelker_ovarian$expr_mat[bulk_genes, ], immune_cell_reference$expr_mat[bulk_genes, ])
-```
-
-```{r, cache=TRUE, message=FALSE, echo=FALSE}
-xcell_bulk = deconvolute(genuine_bulk_expr_mat, "xcell") %>%
-    # map_result_to_celltypes(show_cell_types, "xcell") %>%
-    # as_tibble(rownames="cell_type") %>% 
-    mutate(source="bulk")
-
-xcell_simulated = deconvolute(simulated_bulk_expr_mat, "xcell") %>%
-    # map_result_to_celltypes(show_cell_types, "xcell") %>%
-    # as_tibble(rownames="cell_type") %>% 
-    mutate(source="mean")
-
-xcell_all = bind_rows(xcell_bulk, xcell_simulated) %>%
-  select(cell_type, `7873M`, `7882M`, `7892M`, source) %>%
-  gather(donor, fraction, -cell_type, -source) %>%
-  spread(source, fraction)
-```
-
-```{r, fig.width=8, fig.height=3, echo=FALSE, fig.cap="Correlation of xCell's prediction on both simulated and genuine bulk RNA-seq samples, including additional samples to increase the variance. "}
-xcell_all %>%
-  ggplot(aes(x=bulk, y=mean)) +
-  geom_point(aes(colour=cell_type)) +
-  stat_cor() + 
-  guides(color=guide_legend(ncol=2)) # + 
-  # scale_color_manual(values=color_scales$simulation)
-```
-
-
-## Correlation with immune reference samples.
-Finally, to demonstrate that the simulated bulk samples are also biologically meaningflu, we generate
-simulated bulk samples of different immune cell types and correlate them with
-reference profiles of pure immune cells.
-
-```{r, fig.width=8, fig.height=8, echo=FALSE, fig.cap="Correlation of simulated bulk samples of a certain immune cell type (y-axis) with immune cell reference samples (x-axis)"}
-set.seed(42)
-cell_fractions = diag(length(cell_types$immune_cells))
-cell_fractions = rbind(cell_fractions, cell_fractions, cell_fractions)
-colnames(cell_fractions) = cell_types$immune_cells
-rownames(cell_fractions) = unlist(lapply(1:3, function(i) {paste0(cell_types$immune_cells, "_", i)}))
-
-simulated_bulk = make_bulk_eset(eset=single_cell_schelker$eset, cell_fractions = cell_fractions, n_cells=500, combine=mean) %>% exprs()
-simulated_bulk = log2(simulated_bulk+1)
-colnames(simulated_bulk) = rownames(cell_fractions)
-
-immune_bulk = log2(immune_cell_reference$expr_mat + 1)
-colnames(immune_bulk) = paste(immune_cell_reference$sample_description$cell_type, immune_cell_reference$sample_description$sample)
-
-common_symbols = intersect(rownames(simulated_bulk), rownames(immune_bulk))
-
-# all_samples = cbind(simulated_bulk[common_symbols,], immune_bulk[common_symbols, ])
-# pheatmap(all_samples, cluster_rows = FALSE, cluster_cols = TRUE, clustering_distance_cols="correlation")
-
-cor(simulated_bulk[common_symbols,], immune_bulk[common_symbols,]) %>% pheatmap()
-```
-
-In general, the highest correlation is observed between the expression of the sorted cells and the simulated bulk sample.
-However, the simulated Dendritic cells do not correlate well with any of the reference profiles.
